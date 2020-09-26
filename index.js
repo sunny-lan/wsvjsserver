@@ -17,7 +17,28 @@ if (process.env.PORT) {
 
 const wss = new WebSocket.Server({port, host});
 
+function phost(s){
+    if(s[0]==='['){
+        return {
+            host:s.split(']:')[0].slice(1),
+            port:Number.parseInt(s.split(']:')[1])
+        }
+    }else return {
+        host:s.split(':')[0],
+        port:Number.parseInt(s.split(':')[1])
+    }
+}
+
+function makeTimeout(f, timeout){
+    const v=setTimeout(f, timeout);
+    return ()=>{
+        clearTimeout(v);
+        setTimeout(f, timeout);
+    }
+}
+
 let id = 1;
+const tt=30*1000;
 wss.on('connection', function connection(ws) {
 
     const idd = id++;
@@ -28,22 +49,37 @@ wss.on('connection', function connection(ws) {
     let udpclient, tcpclient;
     let udpPort, udpDest;
 
+    const resetTimeout=makeTimeout(()=>{
+        console.log(idd,' timed out')
+        ws.close()
+        try {
+            if (udpclient && udpclient.runn) udpclient.close();
+        }catch(e){
+
+        }
+        try{
+            if(tcpclient)tcpclient.abort();
+
+        }catch (e){}
+    }, tt);
+
     ws.on('message', function incoming(message) {
         dbg(idd, message);
+        resetTimeout();
 
         if (mode === init) {
             message = JSON.parse(message);
             if (message.ConType === 'udp') {
                 mode = udpA;
                 udpclient = dgram.createSocket('udp4');
+
                 udpclient.on('message', (msg, info) => {
                     dbg('udp %d: Received %d bytes from %s:%d\n', idd, msg.length, info.address, info.port);
                     ws.send(msg);
                 });
             } else if (message.ConType === 'tcp') {
                 tcpclient = new net.Socket();
-                const host = message.Dst.split(':')[0];
-                const port = Number.parseInt(message.Dst.split(':')[1]);
+                const {host,port}=phost(message.Dst)
                 tcpclient.connect(port, host, () => {
                     dbg(idd, "tcp connected", port, host);
                 });
@@ -65,8 +101,9 @@ wss.on('connection', function connection(ws) {
             }
         } else if (mode === udpA) {
             message = JSON.parse(message);
-            udpPort = message.Port;
-            udpDest = message.Dst.split(':')[0];
+            const {host,port}=phost(message.Dst)
+            udpPort = port;
+            udpDest = host;
             mode = udpB;
         } else if (mode === udpB) {
             udpclient.send(message, udpPort, udpDest, (err) => {
