@@ -29,11 +29,22 @@ function phost(s){
     }
 }
 
+const err=100;
 function makeTimeout(f, timeout){
-    const v=setTimeout(f, timeout);
+    let death=Date.now()+timeout
+    const wrapped=()=>{
+        const now=Date.now();
+        const timeleft=death-now;
+        if(timeleft>err){
+            dbg('timeout in ', timeleft)
+            setTimeout(wrapped,timeleft);
+        }else{
+            f();
+        }
+    }
+    setTimeout(wrapped, timeout);
     return ()=>{
-        clearTimeout(v);
-        setTimeout(f, timeout);
+        death=Date.now()+timeout
     }
 }
 
