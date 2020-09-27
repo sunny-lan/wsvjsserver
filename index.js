@@ -3,7 +3,7 @@ const dgram = require('dgram');
 const net = require('net');
 
 
-const init = 1, tcp = 2, udpA = 3, udpB = 4;
+//select correct params based on environment
 let port = 80, host = '0.0.0.0';
 let dbg = function (...arg) {
     console.log(...arg)
@@ -17,90 +17,104 @@ if (process.env.PORT) {
 
 const wss = new WebSocket.Server({port, host});
 
-function phost(s){
-    if(s[0]==='['){
+function parseHostString(s) {
+    if (s[0] === '[') {
         return {
-            host:s.split(']:')[0].slice(1),
-            port:Number.parseInt(s.split(']:')[1])
+            host: s.split(']:')[0].slice(1),
+            port: Number.parseInt(s.split(']:')[1])
         }
-    }else return {
-        host:s.split(':')[0],
-        port:Number.parseInt(s.split(':')[1])
+    } else return {
+        host: s.split(':')[0],
+        port: Number.parseInt(s.split(':')[1])
     }
 }
 
-const err=100;
-function makeTimeout(f, timeout){
-    let death=Date.now()+timeout
-    const wrapped=()=>{
-        const now=Date.now();
-        const timeleft=death-now;
-        if(timeleft>err){
-            dbg('timeout in ', timeleft)
-            setTimeout(wrapped,timeleft);
-        }else{
+const timeoutEase = 100;
+
+// sets a timeout to call f in timeout milliseconds
+// returns a function 'reset'
+// if this function is called, the timer resets and counts down again
+function makeTimeout(f, timeout) {
+    let deathTime = Date.now() + timeout
+    const wrapped = () => {
+        const now = Date.now();
+        const timeLeft = deathTime - now;
+        if (timeLeft > timeoutEase) {
+            dbg('timeout in ', timeLeft)
+            setTimeout(wrapped, timeLeft);
+        } else {
             f();
         }
     }
     setTimeout(wrapped, timeout);
-    return ()=>{
-        death=Date.now()+timeout
+    return () => {
+        deathTime = Date.now() + timeout
     }
 }
 
-let id = 1;
-const tt=30*1000;
+//possible states for the connection
+const INIT = 1, TCP = 2, UDP_A = 3, UDP_B = 4;
+
+let nextConnID = 1;
+const TIMEOUT = 30 * 1000;
 wss.on('connection', function connection(ws) {
 
-    const idd = id++;
+    const connID = nextConnID++;
 
-    console.log('connection', idd);
+    console.log('connection', connID);
 
-    let mode = init;
+    let mode = INIT;
     let udpclient, tcpclient;
     let udpPort, udpDest;
 
-    const resetTimeout=makeTimeout(()=>{
-        console.log(idd,' timed out')
-        ws.close()
+    function dropConnection() {
+        try {
+            ws.close()
+        } catch (e) {
+        }
         try {
             if (udpclient && udpclient.runn) udpclient.close();
-        }catch(e){
-
+        } catch (e) {
         }
-        try{
-            if(tcpclient)tcpclient.abort();
 
-        }catch (e){}
-    }, tt);
+        try {
+            if (tcpclient) tcpclient.abort();
+        } catch (e) {
+        }
+    }
+
+    const resetTimeout = makeTimeout(() => {
+        console.log(connID, ' timed out')
+        dropConnection()
+    }, TIMEOUT);
 
     ws.on('message', function incoming(message) {
-        dbg(idd, message);
+        dbg(connID, message);
         resetTimeout();
 
-        if (mode === init) {
+        if (mode === INIT) {
             message = JSON.parse(message);
             if (message.ConType === 'udp') {
-                mode = udpA;
+                mode = UDP_A;
                 udpclient = dgram.createSocket('udp4');
 
                 udpclient.on('message', (msg, info) => {
-                    dbg('udp %d: Received %d bytes from %s:%d\n', idd, msg.length, info.address, info.port);
+                    dbg('udp %d: Received %d bytes from %s:%d\n', connID, msg.length, info.address, info.port);
                     ws.send(msg);
                 });
             } else if (message.ConType === 'tcp') {
                 tcpclient = new net.Socket();
-                const {host,port}=phost(message.Dst)
+                const {host, port} = parseHostString(message.Dst)
                 tcpclient.connect(port, host, () => {
-                    dbg(idd, "tcp connected", port, host);
+                    dbg(connID, "tcp connected", port, host);
                 });
 
                 tcpclient.on('data', (data) => {
-                    dbg(idd, 'tcp data recv', data.length);
+                    dbg(connID, 'tcp data recv', data.length);
                     ws.send(data);
                 });
                 tcpclient.on('close', () => {
-                    dbg(idd, 'tcp close');
+                    dbg(connID, 'tcp close');
                     ws.close();
                 });
                 tcpclient.on('error', err => {
@@ -108,31 +122,32 @@ wss.on('connection', function connection(ws) {
                     if (!tcpclient.destroyed)
                         tcpclient.end()
                 });
-                mode = tcp;
+                mode = TCP;
             }
-        } else if (mode === udpA) {
+        } else if (mode === UDP_A) {
             message = JSON.parse(message);
-            const {host,port}=phost(message.Dst)
+            const {host, port} = parseHostString(message.Dst)
             udpPort = port;
             udpDest = host;
-            mode = udpB;
-        } else if (mode === udpB) {
+            mode = UDP_B;
+        } else if (mode === UDP_B) {
             udpclient.send(message, udpPort, udpDest, (err) => {
                 if (err)
-                    console.error(idd, 'udp error', err)
+                    console.error(connID, 'udp error', err)
             });
-            mode = udpA;
-        } else if (mode === tcp) {
+            mode = UDP_A;
+        } else if (mode === TCP) {
             tcpclient.write(message);
         }
     });
 
 
-    ws.on('close', () => console.log('disconnect', idd));
+    ws.on('close', () => {
+        console.log('disconnect', connID)
+        dropConnection()
+    });
     ws.on('error', err => {
         console.error(err);
         ws.close()
     })
-
-
 });
