@@ -1,21 +1,38 @@
-const WebSocket = require('ws');
+const WebSocketServer = require('ws').Server;
 const dgram = require('dgram');
 const net = require('net');
+const Https = require('https');
+const Fs = require('fs');
+
+const myArgs = process.argv.slice(2);
 
 
-//select correct params based on environment
-let port = 80, host = '0.0.0.0';
 let dbg = function (...arg) {
-    console.log(...arg)
+    // console.log(...arg)
 };
-if (process.env.PORT) {
-    port = Number.parseInt(process.env.PORT);
-    host = undefined;
-    dbg = () => {
-    };
-}
 
-const wss = new WebSocket.Server({port, host});
+if (myArgs.length >= 1) {
+    const httpPort = Number.parseInt(myArgs[0])
+    console.log(`Listening HTTP:${httpPort}`)
+    const wss = new WebSocketServer({port: httpPort, host: '0.0.0.0'});
+    wss.on('connection', connection);
+}
+if (myArgs.length === 4) {
+
+
+    const httpsPort = Number.parseInt(myArgs[1])
+    console.log(`Listening HTTPS:${httpsPort}`)
+
+    const key = myArgs[2], cert = myArgs[3];
+    const httpsServer = Https.createServer({
+        key: Fs.readFileSync(key),
+        cert: Fs.readFileSync(cert)
+    });
+    const wss = new WebSocketServer({server: httpsServer});
+    wss.on('connection', connection)
+    httpsServer.listen(httpsPort, '0.0.0.0')
+
+}
 
 function parseHostString(s) {
     if (s[0] === '[') {
@@ -57,7 +74,8 @@ const INIT = 1, TCP = 2, UDP_A = 3, UDP_B = 4;
 
 let nextConnID = 1;
 const TIMEOUT = 30 * 1000;
-wss.on('connection', function connection(ws) {
+
+function connection(ws) {
 
     const connID = nextConnID++;
 
@@ -150,4 +168,4 @@ wss.on('connection', function connection(ws) {
         console.error(err);
         ws.close()
     })
-});
+}
